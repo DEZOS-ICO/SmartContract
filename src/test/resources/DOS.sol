@@ -1,5 +1,8 @@
-pragma solidity ^0.4.23;
-import "./safeMath.sol";
+//use always the latest version, which contains latest bugfixes
+pragma solidity ^0.4.25;
+
+import "./SafeMath.sol";
+import "./SafeMath192.sol";
 import "./Utils.sol";
 
 contract ERC20 {
@@ -17,37 +20,35 @@ contract ERC20 {
  * @title ERC677 transferAndCall token interface
  * @dev See https://github.com/ethereum/EIPs/issues/677 for specification and
  *      discussion.
+ *
+ * We deviate from the specification and we don't define a tokenfallback. That means
+ * tranferAndCall can specify the function to call (bytes4(sha3("setN(uint256)")))
+ * and its arguments, and the respective function is called.
+ * TODO: find out what happens if the function is not found. Will the default function
+ * be called, or will the function return false?
+ *
+ * We also deviate from ERC865 and added a pre signed transaction for transferAndCall.
  */
-contract ERC677 {
-    event Transfer(address indexed _from, address indexed _to, uint256 _value, bytes _data);
+contract ERC865Plus677ish {
+    event TransferAndCall(address indexed _from, address indexed _to, uint256 _value, bytes4 _methodName, bytes _args);
+    function transferAndCall(address _to, uint256 _value, bytes4 _methodName, bytes _args) public returns (bool success);
 
-    function transferAndCall(address _to, uint _value, bytes _data) public returns (bool success);
-}
-
-/**
- * @title Receiver interface for ERC677 transferAndCall
- * @dev See https://github.com/ethereum/EIPs/issues/677 for specification and
- *      discussion.
- */
-contract ERC677Receiver {
-    function tokenFallback(address _from, uint _value, bytes _data) public;
-}
-
-contract ERC865Plus677 {
     event TransferPreSigned(address indexed _from, address indexed _to, address indexed _delegate,
         uint256 _amount, uint256 _fee);
-    event TransferPreSigned(address indexed _from, address indexed _to, address indexed _delegate,
-        uint256 _amount, uint256 _fee, bytes _data);
+    event TransferAndCallPreSigned(address indexed _from, address indexed _to, address indexed _delegate,
+        uint256 _amount, uint256 _fee, bytes4 _methodName, bytes _args);
 
     function transferPreSigned(bytes _signature, address _to, uint256 _value,
         uint256 _fee, uint256 _nonce) public returns (bool);
     function transferAndCallPreSigned(bytes _signature, address _to, uint256 _value,
-        uint256 _fee, uint256 _nonce, bytes _data) public returns (bool);
+        uint256 _fee, uint256 _nonce, bytes4 _methodName, bytes _args) public returns (bool);
 }
 
-contract DOS is ERC677, ERC20, ERC865Plus677 {
+//TODO: check ERC865 for latest development
+contract DOS is ERC20, ERC865Plus677ish {
 
     using SafeMath for uint256;
+    using SafeMath192 for uint192;
 
     string public constant name = "DOS Token";
     string public constant symbol = "DOS";
@@ -55,19 +56,21 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
 
     mapping(address => Snapshot[]) balances;
     mapping(address => mapping(address => uint256)) internal allowed;
-    /* Nonces of transfers performed */
+    // nonces of transfers performed
     mapping(bytes => bool) signatures;
 
     uint256 public totalSupply_;
-    uint256 constant public maxSupply = 298607040 * (10 ** uint256(decimals));
+    //according to https://dezos.io/
+    //this will fit int 2^90:
+    //1237940039285380274899124224 (2^90)
+    // 900000000000000000000000000 (max supply) we have 192bits in the Snapshot struct, which is more than enough
+    uint256 constant public maxSupply = 900000000 * (10 ** uint256(decimals));
 
-    //we want to create a snapshot of the token balances will fit into 2 x 256bit
+    //we want to create a snapshot of the token balances will fit into 256bit
     struct Snapshot {
-        // `fromBlock` is the block number that the value was generated from
+        // fromBlock is the block number that the value was generated from
         uint64 fromBlock;
-        address fromAddress;
-        //0 is regular, rest is for accumulation
-        mapping(uint8 => uint256) amount;
+        uint192 amount;
     }
 
     // token lockups
@@ -95,7 +98,7 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
     }
 
     // minting functionality
-    function mint(address[] _recipients, uint256[] _amounts) public {
+    function mint(address[] _recipients, uint192[] _amounts) public {
         require(owner == msg.sender);
         require(mintingDone == false);
         require(_recipients.length == _amounts.length);
@@ -103,17 +106,23 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
 
         for (uint8 i = 0; i < _recipients.length; i++) {
             address recipient = _recipients[i];
-            uint256 amount = _amounts[i];
+            uint192 amount = _amounts[i];
 
             if(balances[recipient].length == 0) {
-                createCurrentSnapshotForAddress(recipient);
+                Snapshot memory tmp;
+                tmp.fromBlock = uint64(block.number);
+                tmp.amount = amount;
+                balances[recipient].push(tmp);
+            } else {
+                Snapshot storage current = balances[recipient][balances[recipient].length - 1];
+                current.amount = current.amount.add(amount);
+                //we don't set the from block, as multiple payments can be seen as one payment, no need to distinguish
             }
-            balances[recipient][balances[recipient].length - 1].amount[0].add(amount);
 
-            totalSupply_ = totalSupply_.add(amount);
+            totalSupply_ = totalSupply_.add(uint256(amount));
             require(totalSupply_ <= maxSupply); // enforce maximum token supply
 
-            emit Transfer(0, recipient, amount);
+            emit Transfer(0, recipient, uint256(amount));
         }
     }
 
@@ -135,7 +144,10 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
         }
     }
 
-    function finishMinting() public { 
+    //If this is called, no more tokens can be generated
+    //The status of the contract can be checked with getMintingDone, as
+    //this variable is set to public, thus, getters are generated automatically
+    function finishMinting() public {
         require(owner == msg.sender);
         require(mintingDone == false);
 
@@ -143,56 +155,62 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
     }
 
     /**
-    * @dev total number of tokens in existence ///why do we need this public?
+    * @dev total number of tokens in existence, which is mandated by the ERC20 interface
     */
     function totalSupply() public view returns (uint256) {
         return totalSupply_;
     }
 
-    /**
-    * @dev transfer token for a specified address
-    * @param _to The address to transfer to.
-    * @param _value The amount to be transferred.
-    */
     function transfer(address _to, uint256 _value) public returns (bool) {
-        return transfer(_to, _value, 0);
-    }
-
-    function transfer(address _to, uint256 _value, uint8 _fromType) public returns (bool) {
-        doTransfer(msg.sender, _to, _value, 0, _fromType);
-        emit Transfer(msg.sender, _to, _value); 
+        doTransfer(msg.sender, _to, _value, 0, 0);
+        emit Transfer(msg.sender, _to, _value);
         return true;
     }
 
     function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
-        return transferFrom(_from, _to, _value, 0);
-    }
-
-    function transferFrom(address _from, address _to, uint256 _value, uint8 _fromType) public returns (bool) {
         require(_value <= allowed[_from][msg.sender]);
-        doTransfer(_from, _to, _value, 0, _fromType);
+        doTransfer(_from, _to, _value, 0, 0);
         allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
         emit Transfer(_from, _to, _value);
         return true;
     }
 
-    function doTransfer(address _from, address _to, uint256 _value, uint256 _fee, uint8 _fromType) internal {
+    function doTransfer(address _from, address _to, uint256 _value, uint256 _fee, address _feeAddress) internal {
         require(_to != address(0));
-        uint256 fromValue = balanceOf(_from);
-        uint256 total = _value.add(_fee);
+        uint192 fromValue = uint192(balanceOf(_from)); //this can only be a uint192 number, no need to check
+        uint192 total = uint192(_value.add(_fee));
+        require(total >= uint192(_value)); //check overflow
         require(total <= fromValue);
         require(mintingDone == true);
-        // check lockups
-        if (lockups[_from] != 0) {
-            require(now >= lockups[_from]);
+        require(now >= lockups[_from]); // check lockups
+
+        from(fromValue, total, _from);
+
+        if(_fee > 0 && _feeAddress != address(0)) {
+            uint192 feeBalance = uint192(balanceOf(_feeAddress)); //this can only be a uint192 number, no need to check
+            uint192 fee = uint192(_fee);
+            require(uint256(fee) == _fee); //192bit value must be the same as 256bit value
+            to(feeBalance, fee, _feeAddress); //event is TransferPreSigned, that will be emitted after this function call
         }
 
-        createCurrentSnapshotForAddress(_from);
-        balances[_from][balances[_from].length - 1].amount[0] = fromValue.sub(total);
-        balances[_to][balances[_to].length - 1].amount[0] = balanceOf(_to).add(_value);
-        if(_fromType != 0) {
-            balances[_to][balances[_to].length - 1].amount[_fromType] = balanceOf(_to, _fromType).add(total);
-        }
+        uint192 toValue = uint192(balanceOf(_to));//this can only be a uint192 number, no need to check
+        uint192 value = uint192(_value);
+        require(uint256(value) == _value); //192bit value must be the same as 256bit value
+        to(toValue, value, _to);
+    }
+
+    function from(uint192 _fromBalance, uint192 _totalValue, address _fromAddress) internal {
+        Snapshot memory tmpFrom;
+        tmpFrom.fromBlock = uint64(block.number);
+        tmpFrom.amount = _fromBalance.sub(_totalValue);
+        balances[_fromAddress].push(tmpFrom);
+    }
+
+    function to(uint192 _toBalance, uint192 _totalValue, address _toAddress) internal {
+        Snapshot memory tmpTo;
+        tmpTo.fromBlock = uint64(block.number);
+        tmpTo.amount = _toBalance.add(_totalValue);
+        balances[_toAddress].push(tmpTo);
     }
 
     /**
@@ -200,21 +218,17 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
     * @param _owner The address to query the the balance of.
     * @return An uint256 representing the amount owned by the passed address.
     */
-    function balanceOf(address _owner) public view returns (uint256) { 
-        return balanceOf(_owner, 0);
-    }
-
-    function balanceOf(address _owner, uint8 _fromType) public view returns (uint256) {
+    function balanceOf(address _owner) public view returns (uint256) {
         if(balances[_owner].length == 0) {
             return 0;
         }
-        for(uint256 i=balances[_owner].length-1;i>=0;i--) {
-            return balances[_owner][i].amount[_fromType];
-        }
-        return 0;
+        //return last amount
+        return uint256(balances[_owner][balances[_owner].length - 1].amount);
     }
 
-    function balanceOf(address _owner, uint8 _fromType, uint64 _fromBlock) public view returns (uint256) { 
+    //This is used to get the balance from a specific point in the history. This is the only way,
+    //how a historic balance can be used within solidity contracts
+    function balanceOf(address _owner, uint64 _fromBlock) public view returns (uint256) {
         // Binary search of the value in the array
         uint min = 0;
         uint max = balances[_owner].length-1;
@@ -227,7 +241,7 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
             }
         }
 
-        return balances[_owner][min].amount[_fromType];
+        return uint256(balances[_owner][min].amount);
     }
 
 
@@ -242,7 +256,8 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
      * @param _spender The address which will spend the funds.
      * @param _value The amount of tokens to be spent.
      */
-    function approve(address _spender, uint256 _value) public returns (bool) {  
+    function approve(address _spender, uint256 _value) public returns (bool) {
+        require(_spender != address(0));
         require(mintingDone == true);
         allowed[msg.sender][_spender] = _value;
         emit Approval(msg.sender, _spender, _value);
@@ -269,7 +284,7 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
      * @param _spender The address which will spend the funds.
      * @param _addedValue The amount of tokens to increase the allowance by.
      */
-    function increaseApproval(address _spender, uint _addedValue) public returns (bool) {
+    function increaseApproval(address _spender, uint256 _addedValue) public returns (bool) {
         require(mintingDone == true);
 
         allowed[msg.sender][_spender] = allowed[msg.sender][_spender].add(_addedValue);
@@ -287,7 +302,7 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
      * @param _spender The address which will spend the funds.
      * @param _subtractedValue The amount of tokens to decrease the allowance by.
      */
-    function decreaseApproval(address _spender, uint _subtractedValue) public returns (bool) {
+    function decreaseApproval(address _spender, uint256 _subtractedValue) public returns (bool) {
         require(mintingDone == true);
 
         uint oldValue = allowed[msg.sender][_spender];
@@ -300,34 +315,22 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
         return true;
     }
 
-    function transferAndCall(address _to, uint _value, bytes _data) public returns (bool) {
-        return transferAndCall(_to, _value, _data, 0);
-    }
-
-    // ERC677 functionality
-    function transferAndCall(address _to, uint _value, bytes _data, uint8 _fromType) public returns (bool) {
+    function transferAndCall(address _to, uint256 _value, bytes4 _methodName, bytes _args) public returns (bool) {
         require(mintingDone == true);
         require(transfer(_to, _value));
 
-        emit Transfer(msg.sender, _to, _value, _data);
+        emit TransferAndCall(msg.sender, _to, _value, _methodName, _args);
 
         // call receiver
-        if (Utils.isContract(_to)) { 
-            ERC677Receiver receiver = ERC677Receiver(_to);
-            receiver.tokenFallback(msg.sender, _value, _data);
+        if (Utils.isContract(_to)) {
+            require(_to.call(_methodName, msg.sender, _value, _args));
         }
         return true;
     }
 
     //ERC 865 + delegate transfer and call
-
-    function transferPreSigned(bytes _signature, address _to, uint256 _value, uint256 _fee, 
-        uint256 _nonce) public returns (bool) {
-        return transferPreSigned(_signature, _to, _value, _fee, _nonce, 0);
-    }
-
     function transferPreSigned(bytes _signature, address _to, uint256 _value, uint256 _fee,
-        uint256 _nonce, uint8 _fromType) public returns (bool) {
+        uint256 _nonce) public returns (bool) {
 
         require(signatures[_signature] == false);
 
@@ -335,8 +338,7 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
         address from = Utils.recover(hashedTx, _signature);
         require(from != address(0));
 
-        doTransfer(from, _to, _value, _fee, _fromType);
-        balances[msg.sender][balances[msg.sender].length -1].amount[0] = balanceOf(msg.sender).add(_fee);
+        doTransfer(from, _to, _value, _fee, msg.sender);
         signatures[_signature] = true;
 
         emit Transfer(from, _to, _value);
@@ -345,41 +347,27 @@ contract DOS is ERC677, ERC20, ERC865Plus677 {
         return true;
     }
 
-    function transferAndCallPreSigned(bytes _signature, address _to, uint256 _value, uint256 _fee, uint256 _nonce, 
-        bytes _data) public returns (bool) { 
-            return transferAndCallPreSigned(_signature, _to, _value, _fee, _nonce, _data, 0);
-    }
-
     function transferAndCallPreSigned(bytes _signature, address _to, uint256 _value, uint256 _fee, uint256 _nonce,
-        bytes _data, uint8 _fromType) public returns (bool) {
+        bytes4 _methodName, bytes _args) public returns (bool) {
 
         require(signatures[_signature] == false);
 
-        bytes32 hashedTx = Utils.transferPreSignedHashing(address(this), _to, _value, _fee, _nonce, _data);
+        bytes32 hashedTx = Utils.transferAndCallPreSignedHashing(address(this), _to, _value, _fee, _nonce, _methodName, _args);
         address from = Utils.recover(hashedTx, _signature);
         require(from != address(0));
 
-        doTransfer(from, _to, _value, _fee, _fromType);
-        balances[msg.sender][balances[msg.sender].length -1].amount[0] = balanceOf(msg.sender).add(_fee);
+        doTransfer(from, _to, _value, _fee, msg.sender);
         signatures[_signature] = true;
 
         emit Transfer(from, _to, _value);
         emit Transfer(from, msg.sender, _fee);
-        emit TransferPreSigned(from, _to, msg.sender, _value, _fee, _data);
+        emit TransferAndCallPreSigned(from, _to, msg.sender, _value, _fee, _methodName, _args);
 
         // call receiver
         if (Utils.isContract(_to)) {
-            ERC677Receiver receiver = ERC677Receiver(_to);
-            receiver.tokenFallback(from, _value, _data);
+            //call on behalf of from and not msg.sender
+            require(_to.call(_methodName, from, _value, _args));
         }
         return true;
-    }
-
-    function createCurrentSnapshotForAddress(address addr) internal returns (Snapshot){
-        //check memory vs. storage options
-        Snapshot memory tmp;
-        tmp.fromAddress = msg.sender;
-        tmp.fromBlock = uint64(block.number);
-        balances[addr].push(tmp);
     }
 }

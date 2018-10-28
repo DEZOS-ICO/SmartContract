@@ -1,0 +1,20 @@
+plugins {
+    id 'java'
+}
+
+group 'io.iconator'
+archivesBaseName = 'dezos-smartcontract'
+version '1.0-SNAPSHOT'
+
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url 'https://dl.bintray.com/ethereum/maven/' }
+}
+
+dependencies {
+    testCompile 'io.iconator:testonator:1.0.28'
+    testCompile 'junit:junit:4.12'
+}
+
