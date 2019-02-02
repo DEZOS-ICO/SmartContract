@@ -1,5 +1,4 @@
-//use always the latest version, which contains latest bugfixes
-pragma solidity ^0.4.25;
+pragma solidity ^0.5.2;
 
 import "./SafeMath.sol";
 import "./Utils.sol";
@@ -23,27 +22,40 @@ contract ERC20 {
  * We deviate from the specification and we don't define a tokenfallback. That means
  * tranferAndCall can specify the function to call (bytes4(sha3("setN(uint256)")))
  * and its arguments, and the respective function is called.
- * TODO: find out what happens if the function is not found. Will the default function
- * be called, or will the function return false?
+ *
+ * If an invalid function is called, its default function (if implemented) is called.
  *
  * We also deviate from ERC865 and added a pre signed transaction for transferAndCall.
  */
+
+/*
+ Notes on signature malleability: Ethereum took the same
+ precaution as in bitcoin was used to prevent that:
+
+ https://github.com/ethereum/go-ethereum/blob/master/vendor/github.com/btcsuite/btcd/btcec/signature.go#L48
+ https://github.com/ethereum/go-ethereum/blob/master/crypto/signature_test.go
+ https://github.com/ethereum/EIPs/blob/master/EIPS/eip-155.md
+ https://github.com/ethereum/EIPs/blob/master/EIPS/eip-2.md
+
+ However, ecrecover still allows ambigous signatures. Thus, recover that wraps ecrecover checks for ambigous
+ signatures and only allows unique signatures.
+*/
+
 contract ERC865Plus677ish {
     event TransferAndCall(address indexed _from, address indexed _to, uint256 _value, bytes4 _methodName, bytes _args);
-    function transferAndCall(address _to, uint256 _value, bytes4 _methodName, bytes _args) public returns (bool success);
+    function transferAndCall(address _to, uint256 _value, bytes4 _methodName, bytes memory _args) public returns (bytes memory);
 
     event TransferPreSigned(address indexed _from, address indexed _to, address indexed _delegate,
         uint256 _amount, uint256 _fee);
     event TransferAndCallPreSigned(address indexed _from, address indexed _to, address indexed _delegate,
         uint256 _amount, uint256 _fee, bytes4 _methodName, bytes _args);
 
-    function transferPreSigned(bytes _signature, address _to, uint256 _value,
+    function transferPreSigned(bytes memory _signature, address _to, uint256 _value,
         uint256 _fee, uint256 _nonce) public returns (bool);
-    function transferAndCallPreSigned(bytes _signature, address _to, uint256 _value,
-        uint256 _fee, uint256 _nonce, bytes4 _methodName, bytes _args) public returns (bool);
+    function transferAndCallPreSigned(bytes memory _signature, address _to, uint256 _value,
+        uint256 _fee, uint256 _nonce, bytes4 _methodName, bytes memory _args) public returns (bytes memory);
 }
 
-//TODO: check ERC865 for latest development
 contract DOS is ERC20, ERC865Plus677ish {
     using SafeMath for uint256;
 
@@ -57,11 +69,7 @@ contract DOS is ERC20, ERC865Plus677ish {
     mapping(bytes => bool) signatures;
 
     uint256 public totalSupply_;
-    //according to https://dezos.io/
-    //this will fit int 2^90:
-    //1237940039285380274899124224 (2^90)
-    // 900000000000000000000000000 (max supply) we have 192bits in the Snapshot struct, which is more than enough
-    uint256 constant public maxSupply = 900000000 * (10 ** uint256(decimals));
+    uint256 public constant maxSupply = 900000000 * (10 ** uint256(decimals));
 
     // token lockups
     mapping(address => uint256) lockups;
@@ -80,6 +88,10 @@ contract DOS is ERC20, ERC865Plus677ish {
 
     // minting
     bool public mintingDone = false;
+
+    //vesting variables, check dates with https://www.epochconverter.com/ and https://www.unixtimestamp.com/
+    uint256 public constant firstFeb19 = 1548979200;
+    uint256 public constant sixMonth = 6 * 30 days;
 
     event TokensLocked(address indexed _holder, uint256 _timeout);
 
@@ -104,7 +116,7 @@ contract DOS is ERC20, ERC865Plus677ish {
     }
 
     // minting functionality
-    function mint(address[] _recipients, uint256[] _amounts) public {
+    function mint(address[] memory _recipients, uint256[] memory _amounts) public {
         require(owner == msg.sender);
         require(!mintingDone);
         require(_recipients.length == _amounts.length);
@@ -119,19 +131,22 @@ contract DOS is ERC20, ERC865Plus677ish {
             totalSupply_ = totalSupply_.add(amount);
             require(totalSupply_ <= maxSupply); // enforce maximum token supply
 
-            emit Transfer(0, recipient, amount);
+            emit Transfer(address(0), recipient, amount);
         }
     }
 
-    function lockTokens(address[] _holders, uint256[] _timeouts) public {
+    /**
+     * @param _sixMonthCliff Number of a six month cliff. E.g., 1 is for 6 month, 2 is for 12 month, 3 is for 18 month, etc.
+     */
+    function lockTokens(address[] memory _holders, uint256[] memory _sixMonthCliff) public {
         require(owner == msg.sender);
         require(!mintingDone);
-        require(_holders.length == _timeouts.length);
+        require(_holders.length == _sixMonthCliff.length);
         require(_holders.length <= 256);
 
         for (uint8 i = 0; i < _holders.length; i++) {
             address holder = _holders[i];
-            uint256 timeout = _timeouts[i];
+            uint256 timeout = (_sixMonthCliff[i].mul(sixMonth)).add(firstFeb19);
 
             // make sure lockup period can not be overwritten
             require(lockups[holder] == 0);
@@ -165,7 +180,8 @@ contract DOS is ERC20, ERC865Plus677ish {
         }
     }
 
-    function isTransferEnabaled() public view returns (bool) {
+    function isTransferEnabled() public view returns (bool) {
+        //all three must agree to disable the transfer
         return transfersEnabled1 || transfersEnabled2 || transfersEnabled3;
     }
 
@@ -177,20 +193,20 @@ contract DOS is ERC20, ERC865Plus677ish {
     }
 
     function transfer(address _to, uint256 _value) public returns (bool) {
-        doTransfer(msg.sender, _to, _value, 0, 0);
+        doTransfer(msg.sender, _to, _value, 0, address(0));
         emit Transfer(msg.sender, _to, _value);
         return true;
     }
 
     function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
         allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
-        doTransfer(_from, _to, _value, 0, 0);
+        doTransfer(_from, _to, _value, 0, address(0));
         emit Transfer(_from, _to, _value);
         return true;
     }
 
     function doTransfer(address _from, address _to, uint256 _value, uint256 _fee, address _feeAddress) internal {
-        require(isTransferEnabaled());
+        require(isTransferEnabled());
         require(_to != address(0));
         uint256 total = _value.add(_fee);
         require(mintingDone);
@@ -285,26 +301,26 @@ contract DOS is ERC20, ERC865Plus677ish {
         return true;
     }
 
-    function transferAndCall(address _to, uint256 _value, bytes4 _methodName, bytes _args) public returns (bool) {
+    function transferAndCall(address _to, uint256 _value, bytes4 _methodName, bytes memory _args) public returns (bytes memory) {
         require(transfer(_to, _value));
 
         emit TransferAndCall(msg.sender, _to, _value, _methodName, _args);
 
         // call receiver
-        if (Utils.isContract(_to)) {
-            require(_to.call(_methodName, msg.sender, _value, _args));
-        }
-        return true;
+        require(Utils.isContract(_to));
+
+        (bool success, bytes memory data) = _to.call(abi.encodePacked(abi.encodeWithSelector(_methodName, msg.sender, _value), _args));
+        require(success);
+        return data;
     }
 
     //ERC 865 + delegate transfer and call
-    function transferPreSigned(bytes _signature, address _to, uint256 _value, uint256 _fee,
-        uint256 _nonce) public returns (bool) {
+    function transferPreSigned(bytes memory _signature, address _to, uint256 _value, uint256 _fee, uint256 _nonce) public returns (bool) {
 
         require(!signatures[_signature]);
-
         bytes32 hashedTx = Utils.transferPreSignedHashing(address(this), _to, _value, _fee, _nonce);
         address from = Utils.recover(hashedTx, _signature);
+
         require(from != address(0));
 
         doTransfer(from, _to, _value, _fee, msg.sender);
@@ -316,13 +332,13 @@ contract DOS is ERC20, ERC865Plus677ish {
         return true;
     }
 
-    function transferAndCallPreSigned(bytes _signature, address _to, uint256 _value, uint256 _fee, uint256 _nonce,
-        bytes4 _methodName, bytes _args) public returns (bool) {
+    function transferAndCallPreSigned(bytes memory _signature, address _to, uint256 _value, uint256 _fee, uint256 _nonce,
+        bytes4 _methodName, bytes memory _args) public returns (bytes memory) {
 
         require(!signatures[_signature]);
-
         bytes32 hashedTx = Utils.transferAndCallPreSignedHashing(address(this), _to, _value, _fee, _nonce, _methodName, _args);
         address from = Utils.recover(hashedTx, _signature);
+
         require(from != address(0));
 
         doTransfer(from, _to, _value, _fee, msg.sender);
@@ -333,10 +349,11 @@ contract DOS is ERC20, ERC865Plus677ish {
         emit TransferAndCallPreSigned(from, _to, msg.sender, _value, _fee, _methodName, _args);
 
         // call receiver
-        if (Utils.isContract(_to)) {
-            //call on behalf of from and not msg.sender
-            require(_to.call(_methodName, from, _value, _args));
-        }
-        return true;
+        require(Utils.isContract(_to));
+
+        //call on behalf of from and not msg.sender
+        (bool success, bytes memory data) = _to.call(abi.encodePacked(abi.encodeWithSelector(_methodName, from, _value), _args));
+        require(success);
+        return data;
     }
 }
