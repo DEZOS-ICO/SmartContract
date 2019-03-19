@@ -63,16 +63,16 @@ contract DOS is ERC20, ERC865Plus677ish {
     string public constant symbol = "DOS";
     uint8 public constant decimals = 18;
 
-    mapping(address => uint256) balances;
-    mapping(address => mapping(address => uint256)) internal allowed;
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowed;
     // nonces of transfers performed
-    mapping(bytes => bool) signatures;
+    mapping(bytes => bool) private signatures;
 
     uint256 private totalSupply_;
     uint256 public constant maxSupply = 900000000 * (10 ** uint256(decimals));
 
     // token lockups
-    mapping(address => uint256) lockups;
+    mapping(address => uint256) private lockups;
 
     // ownership
     address public owner;
@@ -125,7 +125,7 @@ contract DOS is ERC20, ERC865Plus677ish {
     }
 
     // minting functionality
-    function mint(address[] memory _recipients, uint256[] memory _amounts) public {
+    function mint(address[] memory _recipients, uint256[] memory _amounts) external {
         require(owner == msg.sender);
         require(!mintingDone);
         require(_recipients.length == _amounts.length);
@@ -147,7 +147,7 @@ contract DOS is ERC20, ERC865Plus677ish {
     /**
      * @param _sixMonthCliff Number of a six month cliff. E.g., 1 is for 6 month, 2 is for 12 month, 3 is for 18 month, etc.
      */
-    function lockTokens(address[] memory _holders, uint256[] memory _sixMonthCliff) public {
+    function lockTokens(address[] memory _holders, uint256[] memory _sixMonthCliff) external {
         require(owner == msg.sender);
         require(!mintingDone);
         require(_holders.length == _sixMonthCliff.length);
@@ -325,6 +325,8 @@ contract DOS is ERC20, ERC865Plus677ish {
     }
 
     //ERC 865 + delegate transfer and call
+    //The signature only allows s < secp256k1n / 2 and v to be 27/28
+    //If this is not the case the function will revert
     function transferPreSigned(bytes memory _signature, address _to, uint256 _value, uint256 _fee, uint256 _nonce) public returns (bool) {
 
         require(!signatures[_signature]);
@@ -342,6 +344,8 @@ contract DOS is ERC20, ERC865Plus677ish {
         return true;
     }
 
+    //The signature only allows s < secp256k1n / 2 and v to be 27/28
+    //If this is not the case the function will revert
     function transferAndCallPreSigned(bytes memory _signature, address _to, uint256 _value, uint256 _fee, uint256 _nonce,
         bytes4 _methodName, bytes memory _args) public returns (bytes memory) {
 
