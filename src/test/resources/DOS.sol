@@ -67,6 +67,8 @@ contract DOS is ERC20, ERC865Plus677ish {
     mapping(address => mapping(address => uint256)) private allowed;
     // nonces of transfers performed
     mapping(bytes => bool) private signatures;
+    mapping(address => mapping (uint256 => bool)) private nonces;
+    mapping(address => bool) private contractWhitelist;
 
     uint256 private totalSupply_;
     uint256 public constant maxSupply = 900000000 * (10 ** uint256(decimals));
@@ -76,6 +78,7 @@ contract DOS is ERC20, ERC865Plus677ish {
 
     // ownership
     address public owner;
+    address public tmpOwner;
     address public admin1;
     address public admin2;
 
@@ -108,8 +111,15 @@ contract DOS is ERC20, ERC865Plus677ish {
         require(_newOwner != address(0));
         require(_newOwner != admin1);
         require(_newOwner != admin2);
+        require(_newOwner != owner); //sanity check
 
-        owner = _newOwner;
+        tmpOwner = _newOwner;
+    }
+
+    function claimOwnership() public {
+        require(tmpOwner == msg.sender);
+        owner = tmpOwner;
+        tmpOwner = address(0);
     }
 
     function setAdmin(address _admin1, address _admin2) public {
@@ -122,6 +132,18 @@ contract DOS is ERC20, ERC865Plus677ish {
 
         admin1 = _admin1;
         admin2 = _admin2;
+    }
+
+    function addWhitelist(address contractAddress) public {
+        require(owner == msg.sender || admin1 == msg.sender || admin2 == msg.sender);
+
+        contractWhitelist[contractAddress] = true;
+    }
+
+    function removeWhitelist(address contractAddress) public {
+        require(owner == msg.sender || admin1 == msg.sender || admin2 == msg.sender);
+
+        delete contractWhitelist[contractAddress];
     }
 
     // minting functionality
@@ -155,10 +177,10 @@ contract DOS is ERC20, ERC865Plus677ish {
 
         for (uint8 i = 0; i < _holders.length; i++) {
             address holder = _holders[i];
-            uint256 timeout = (_sixMonthCliff[i].mul(sixMonth)).add(firstFeb19);
-
             // make sure lockup period can not be overwritten
             require(lockups[holder] == 0);
+
+            uint256 timeout = (_sixMonthCliff[i].mul(sixMonth)).add(firstFeb19);
 
             lockups[holder] = timeout;
             emit TokensLocked(holder, timeout);
@@ -202,19 +224,17 @@ contract DOS is ERC20, ERC865Plus677ish {
     }
 
     function transfer(address _to, uint256 _value) public returns (bool) {
-        doTransfer(msg.sender, _to, _value, 0, address(0));
-        emit Transfer(msg.sender, _to, _value);
+        _transfer(msg.sender, _to, _value, 0, address(0));
         return true;
     }
 
     function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
-        allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
-        doTransfer(_from, _to, _value, 0, address(0));
-        emit Transfer(_from, _to, _value);
+        _transfer(_from, _to, _value, 0, address(0));
+        _approve(_from, msg.sender, allowed[_from][msg.sender].sub(_value));
         return true;
     }
 
-    function doTransfer(address _from, address _to, uint256 _value, uint256 _fee, address _feeAddress) internal {
+    function _transfer(address _from, address _to, uint256 _value, uint256 _fee, address _feeAddress) internal {
         require(isTransferEnabled());
         require(_to != address(0));
         require(_to != address(this));
@@ -230,6 +250,7 @@ contract DOS is ERC20, ERC865Plus677ish {
         }
 
         balances[_to] = balances[_to].add(_value);
+        emit Transfer(_from, _to, _value);
     }
 
     /**
@@ -244,7 +265,6 @@ contract DOS is ERC20, ERC865Plus677ish {
 
     /**
      * @dev Approve the passed address to spend the specified amount of tokens on behalf of msg.sender.
-     *
      * Beware that changing an allowance with this method brings the risk that someone may use both the old
      * and the new allowance by unfortunate transaction ordering. One possible solution to mitigate this
      * race condition is to first reduce the spender's allowance to 0 and set the desired value afterwards:
@@ -253,10 +273,7 @@ contract DOS is ERC20, ERC865Plus677ish {
      * @param _value The amount of tokens to be spent.
      */
     function approve(address _spender, uint256 _value) public returns (bool) {
-        require(_spender != address(0));
-        require(mintingDone);
-        allowed[msg.sender][_spender] = _value;
-        emit Approval(msg.sender, _spender, _value);
+        _approve(msg.sender, _spender, _value);
         return true;
     }
 
@@ -272,46 +289,50 @@ contract DOS is ERC20, ERC865Plus677ish {
 
     /**
      * @dev Increase the amount of tokens that an owner allowed to a spender.
-     *
-     * approve should be called when allowed[_spender] == 0. To increment
+     * approve should be called when _allowed[msg.sender][spender] == 0. To increment
      * allowed value is better to use this function to avoid 2 calls (and wait until
      * the first transaction is mined)
      * From MonolithDAO Token.sol
+     * Emits an Approval event.
      * @param _spender The address which will spend the funds.
      * @param _addedValue The amount of tokens to increase the allowance by.
      */
-    function increaseApproval(address _spender, uint256 _addedValue) public returns (bool) {
-        require(mintingDone);
-
-        allowed[msg.sender][_spender] = allowed[msg.sender][_spender].add(_addedValue);
-        emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+    function increaseAllowance(address _spender, uint256 _addedValue) public returns (bool) {
+        _approve(msg.sender, _spender, allowed[msg.sender][_spender].add(_addedValue));
         return true;
     }
 
     /**
      * @dev Decrease the amount of tokens that an owner allowed to a spender.
-     *
-     * approve should be called when allowed[_spender] == 0. To decrement
+     * approve should be called when _allowed[msg.sender][spender] == 0. To decrement
      * allowed value is better to use this function to avoid 2 calls (and wait until
      * the first transaction is mined)
      * From MonolithDAO Token.sol
+     * Emits an Approval event.
      * @param _spender The address which will spend the funds.
      * @param _subtractedValue The amount of tokens to decrease the allowance by.
      */
-    function decreaseApproval(address _spender, uint256 _subtractedValue) public returns (bool) {
-        require(mintingDone);
-
-        uint oldValue = allowed[msg.sender][_spender];
-        if (_subtractedValue > oldValue) {
-            allowed[msg.sender][_spender] = 0;
-        } else {
-            allowed[msg.sender][_spender] = oldValue.sub(_subtractedValue);
-        }
-        emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+    function decreaseAllowance(address _spender, uint256 _subtractedValue) public returns (bool) {
+        _approve(msg.sender, _spender, allowed[msg.sender][_spender].sub(_subtractedValue));
         return true;
     }
 
+    /**
+     * @dev Approve an address to spend another addresses' tokens.
+     * @param _owner The address that owns the tokens.
+     * @param _spender The address that will spend the tokens.
+     * @param _value The number of tokens that can be spent.
+     */
+    function _approve(address _owner, address _spender, uint256 _value) internal {
+        require(_spender != address(0));
+        require(_owner != address(0));
+
+        allowed[_owner][_spender] = _value;
+        emit Approval(_owner, _spender, _value);
+    }
+
     function transferAndCall(address _to, uint256 _value, bytes4 _methodName, bytes memory _args) public returns (bytes memory) {
+        require(contractWhitelist[_to]);
         require(transfer(_to, _value));
 
         emit TransferAndCall(msg.sender, _to, _value, _methodName, _args);
@@ -334,11 +355,12 @@ contract DOS is ERC20, ERC865Plus677ish {
         address from = Utils.recover(hashedTx, _signature);
 
         require(from != address(0));
+        require(!nonces[from][_nonce]);
 
-        doTransfer(from, _to, _value, _fee, msg.sender);
+        _transfer(from, _to, _value, _fee, msg.sender);
         signatures[_signature] = true;
+        nonces[from][_nonce] = true;
 
-        emit Transfer(from, _to, _value);
         emit Transfer(from, msg.sender, _fee);
         emit TransferPreSigned(from, _to, msg.sender, _value, _fee);
         return true;
@@ -349,16 +371,18 @@ contract DOS is ERC20, ERC865Plus677ish {
     function transferAndCallPreSigned(bytes memory _signature, address _to, uint256 _value, uint256 _fee, uint256 _nonce,
         bytes4 _methodName, bytes memory _args) public returns (bytes memory) {
 
+        require(contractWhitelist[_to]);
         require(!signatures[_signature]);
         bytes32 hashedTx = Utils.transferAndCallPreSignedHashing(address(this), _to, _value, _fee, _nonce, _methodName, _args);
         address from = Utils.recover(hashedTx, _signature);
 
         require(from != address(0));
+        require(!nonces[from][_nonce]);
 
-        doTransfer(from, _to, _value, _fee, msg.sender);
+        _transfer(from, _to, _value, _fee, msg.sender);
         signatures[_signature] = true;
+        nonces[from][_nonce] = true;
 
-        emit Transfer(from, _to, _value);
         emit Transfer(from, msg.sender, _fee);
         emit TransferAndCallPreSigned(from, _to, msg.sender, _value, _fee, _methodName, _args);
 
