@@ -105,7 +105,7 @@ contract DOS is ERC20, ERC865Plus677ish {
      */
     function transferOwnership(address _newOwner) public {
         require(owner == msg.sender);
-        require(_newOwner != 0x0);
+        require(_newOwner != address(0));
         require(_newOwner != admin1);
         require(_newOwner != admin2);
 
@@ -115,9 +115,9 @@ contract DOS is ERC20, ERC865Plus677ish {
     function setAdmin(address _admin1, address _admin2) public {
         require(owner == msg.sender);
         require(!mintingDone);
-        require(_admin1 != 0x0);
+        require(_admin1 != address(0));
         require(_admin1 != owner);
-        require(_admin2 != 0x0);
+        require(_admin2 != address(0));
         require(_admin2 != owner);
 
         admin1 = _admin1;
@@ -125,7 +125,7 @@ contract DOS is ERC20, ERC865Plus677ish {
     }
 
     // minting functionality
-    function mint(address[] memory _recipients, uint256[] memory _amounts) external {
+    function mint(address[] calldata _recipients, uint256[] calldata _amounts) external {
         require(owner == msg.sender);
         require(!mintingDone);
         require(_recipients.length == _amounts.length);
@@ -147,7 +147,7 @@ contract DOS is ERC20, ERC865Plus677ish {
     /**
      * @param _sixMonthCliff Number of a six month cliff. E.g., 1 is for 6 month, 2 is for 12 month, 3 is for 18 month, etc.
      */
-    function lockTokens(address[] memory _holders, uint256[] memory _sixMonthCliff) external {
+    function lockTokens(address[] calldata _holders, uint256[] calldata _sixMonthCliff) external {
         require(owner == msg.sender);
         require(!mintingDone);
         require(_holders.length == _sixMonthCliff.length);
