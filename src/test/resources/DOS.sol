@@ -1,4 +1,4 @@
-pragma solidity ^0.5.2;
+pragma solidity 0.5.6;
 
 import "./SafeMath.sol";
 import "./Utils.sol";
@@ -68,7 +68,7 @@ contract DOS is ERC20, ERC865Plus677ish {
     // nonces of transfers performed
     mapping(bytes => bool) signatures;
 
-    uint256 public totalSupply_;
+    uint256 private totalSupply_;
     uint256 public constant maxSupply = 900000000 * (10 ** uint256(decimals));
 
     // token lockups
@@ -105,12 +105,21 @@ contract DOS is ERC20, ERC865Plus677ish {
      */
     function transferOwnership(address _newOwner) public {
         require(owner == msg.sender);
+        require(_newOwner != 0x0);
+        require(_newOwner != admin1);
+        require(_newOwner != admin2);
+
         owner = _newOwner;
     }
 
     function setAdmin(address _admin1, address _admin2) public {
         require(owner == msg.sender);
         require(!mintingDone);
+        require(_admin1 != 0x0);
+        require(_admin1 != owner);
+        require(_admin2 != 0x0);
+        require(_admin2 != owner);
+
         admin1 = _admin1;
         admin2 = _admin2;
     }
@@ -120,13 +129,13 @@ contract DOS is ERC20, ERC865Plus677ish {
         require(owner == msg.sender);
         require(!mintingDone);
         require(_recipients.length == _amounts.length);
-        require(_recipients.length <= 256);
+        require(_recipients.length <= 255);
 
         for (uint8 i = 0; i < _recipients.length; i++) {
             address recipient = _recipients[i];
             uint256 amount = _amounts[i];
 
-            balances[recipient] += amount;
+            balances[recipient] = balances[recipient].add(amount);
 
             totalSupply_ = totalSupply_.add(amount);
             require(totalSupply_ <= maxSupply); // enforce maximum token supply
@@ -142,7 +151,7 @@ contract DOS is ERC20, ERC865Plus677ish {
         require(owner == msg.sender);
         require(!mintingDone);
         require(_holders.length == _sixMonthCliff.length);
-        require(_holders.length <= 256);
+        require(_holders.length <= 255);
 
         for (uint8 i = 0; i < _holders.length; i++) {
             address holder = _holders[i];
@@ -208,6 +217,7 @@ contract DOS is ERC20, ERC865Plus677ish {
     function doTransfer(address _from, address _to, uint256 _value, uint256 _fee, address _feeAddress) internal {
         require(isTransferEnabled());
         require(_to != address(0));
+        require(_to != address(this));
         uint256 total = _value.add(_fee);
         require(mintingDone);
         require(now >= lockups[_from]); // check lockups
