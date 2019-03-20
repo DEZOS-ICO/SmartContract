@@ -1,10 +1,7 @@
 package io.iconator.testonator;
 
 import org.junit.*;
-import org.web3j.abi.datatypes.Address;
-import org.web3j.abi.datatypes.Bool;
-import org.web3j.abi.datatypes.Type;
-import org.web3j.abi.datatypes.Utf8String;
+import org.web3j.abi.datatypes.*;
 import org.web3j.abi.datatypes.generated.Uint256;
 import org.web3j.utils.Numeric;
 
@@ -35,6 +32,10 @@ public class TestTransferAndCall {
         Map<String, Contract> testContracts = compile(contractFile);
         contracts.putAll(testContracts);
 
+        //compile test receiving contract
+        contractFile = Paths.get(ClassLoader.getSystemResource("EncodingTest.sol").toURI()).toFile();
+        testContracts = compile(contractFile);
+        contracts.putAll(testContracts);
     }
 
     @AfterClass
@@ -45,6 +46,46 @@ public class TestTransferAndCall {
     @After
     public void afterTests() {
         blockchain.reset();
+    }
+
+    @Test
+    public void testEncoding() throws InterruptedException, ExecutionException, IOException, NoSuchMethodException, InstantiationException, IllegalAccessException, ConvertException, InvocationTargetException {
+        DeployedContract dcEncoding = blockchain.deploy(CREDENTIAL_0, contracts.get("EncodingTest"));
+
+        byte[] methodName = Numeric.hexStringToByteArray("0x75b7e9f9");
+
+        String encoded = io.iconator.testonator.Utils.encodeParameters(2, new DynamicBytes(Numeric.hexStringToByteArray("0x30783235")));
+
+        byte[] arg = Numeric.hexStringToByteArray(encoded);
+
+        List<Event> result = blockchain.call(
+                dcEncoding, "encode",
+                methodName,
+                arg,
+                CREDENTIAL_0.getAddress(),
+                BigInteger.valueOf(99));
+
+        System.out.println("FunctionSelector: " + Numeric.toHexString(methodName));
+        System.out.println("FROM: " + CREDENTIAL_0.getAddress());
+        System.out.println("VALUE: " + BigInteger.valueOf(99));
+        System.out.println("ARGS: " + encoded);
+
+        Assert.assertEquals(2, result.size());
+
+        DynamicBytes chain = (DynamicBytes) result.get(0).values().get(0);
+        DynamicBytes dezos = (DynamicBytes) result.get(1).values().get(0);
+
+        System.out.println("ChainSolution: " + Numeric.toHexString(chain.getValue()));
+        System.out.println("DezosSolution: " + Numeric.toHexString(dezos.getValue()));
+
+        byte[] expected = Numeric.hexStringToByteArray("0x75b7e9f9" +
+                "0000000000000000000000003572f8c373c15df4042d38c1b3b67d70429ca65a" +
+                "0000000000000000000000000000000000000000000000000000000000000063" +
+                "0000000000000000000000000000000000000000000000000000000000000060" +
+                "0000000000000000000000000000000000000000000000000000000000000004" +
+                "3078323500000000000000000000000000000000000000000000000000000000");
+
+        Assert.assertArrayEquals(expected, dezos.getValue());
     }
 
     @Test
