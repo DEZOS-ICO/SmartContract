@@ -119,6 +119,7 @@ contract DOS is ERC20, ERC865Plus677ish {
         require(_admin1 != owner);
         require(_admin2 != 0x0);
         require(_admin2 != owner);
+        require(_admin1 != _admin2);
 
         admin1 = _admin1;
         admin2 = _admin2;
