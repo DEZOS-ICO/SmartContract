@@ -53,12 +53,23 @@ public class TestUtils {
         return contractsSnapshot;
     }
 
-    public static void mint(TestBlockchain blockchain, DeployedContract deployed, String address1, String address2, String address3, int value1, int value2, int value3) throws NoSuchMethodException, InterruptedException, ExecutionException, InstantiationException, ConvertException, IllegalAccessException, InvocationTargetException, IOException {
-        mint(blockchain, deployed, address1, address2, address3, value1, value2, value3, true);
+    public static void mint(TestBlockchain blockchain, DeployedContract deployed, String address1, String address2,
+                            String address3, int value1, int value2, int value3)
+            throws NoSuchMethodException, InterruptedException, ExecutionException, InstantiationException, ConvertException, IllegalAccessException, InvocationTargetException, IOException {
+        mint(blockchain, deployed, address1, address2, address3, value1, value2, value3, null, true);
+    }
+
+    public static void mint(TestBlockchain blockchain, DeployedContract deployed, String address1, String address2,
+                            String address3, int value1, int value2, int value3, String whitelist)
+            throws NoSuchMethodException, InterruptedException, ExecutionException, InstantiationException, ConvertException, IllegalAccessException, InvocationTargetException, IOException {
+        mint(blockchain, deployed, address1, address2, address3, value1, value2, value3, whitelist, true);
     }
 
 
-    public static void mint(TestBlockchain blockchain, DeployedContract deployed, String address1, String address2, String address3, int value1, int value2, int value3, boolean setFlag) throws NoSuchMethodException, InstantiationException, IllegalAccessException, ConvertException, InvocationTargetException, InterruptedException, ExecutionException, IOException {
+    public static void mint(TestBlockchain blockchain, DeployedContract deployed, String address1, String address2,
+                            String address3, int value1, int value2, int value3, String whitelist, boolean setFlag)
+            throws NoSuchMethodException, InstantiationException, IllegalAccessException, ConvertException,
+            InvocationTargetException, InterruptedException, ExecutionException, IOException {
         List<String> addresses = new ArrayList<>(3);
         List<BigInteger> values = new ArrayList<>(3);
         int counter = 0;
@@ -95,6 +106,12 @@ public class TestUtils {
                 Fb.name("setAdmin")
                         .input("address", TestBlockchain.CREDENTIAL_1.getAddress())
                         .input("address", TestBlockchain.CREDENTIAL_2.getAddress()));
+
+        if(whitelist != null) {
+            events = blockchain.call(deployed,
+                    Fb.name("addWhitelist")
+                            .input("address", whitelist));
+        }
 
         if(setFlag) {
             events = blockchain.call(deployed, Fb.name("finishMinting"));
