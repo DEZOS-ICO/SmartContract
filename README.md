@@ -141,7 +141,7 @@ The repository can be checked out with:
 git clone https://github.com/DEZOS-ICO/SmartContract.git
 ```
 
-and run the testcases. It uses Solidity 0.5.x.
+and run the testcases. It uses Solidity 0.5.7.
 
 ```
 cd SmartContract
